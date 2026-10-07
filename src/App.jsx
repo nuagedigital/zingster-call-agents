@@ -1,249 +1,789 @@
-// src/App.jsx
-import { useCallback, useEffect, useRef, useState } from 'react';
-import AgentBar   from './components/AgentBar.jsx';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
+
+import AgentBar from './components/AgentBar.jsx';
 import AgentPanel from './components/AgentPanel.jsx';
+
 import { useSpeechRecognition } from './hooks/useSpeechRecognition.js';
-import { useSpeechSynthesis }   from './hooks/useSpeechSynthesis.js';
+
+import {
+  useSpeechSynthesis,
+} from './hooks/useSpeechSynthesis.js';
+
 import { askAgent } from './lib/api.js';
+
 import { ToastCart } from './lib/toast.js';
 
+const GREETING =
+  'Hi there! Thanks for calling Zingster. I can help you place a pickup order today. What can I get started for you?';
+
 export default function App() {
-  const [open, setOpen]             = useState(false);
-  const [mode, setMode]             = useState('chat');
-  const [inputText, setInputText]   = useState('');
-  const [processing, setProcessing] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [toastMenu, setToastMenu]   = useState(null);
-  const [callActive, setCallActive] = useState(false);
+  const [open, setOpen] = useState(false);
 
-  // 🔥 turn control
-  const [aiSpeaking, setAiSpeaking] = useState(false);
-  const [micActive, setMicActive]   = useState(false);
+  const [mode, setMode] =
+    useState('chat');
 
-  const [messages, setMessages] = useState([
-    {
-      role: 'agent',
-      text: "Hi there! Thanks for calling Zingster. I can help you place a pickup order today. What can I get started for you?",
-    },
-  ]);
+  const [inputText, setInputText] =
+    useState('');
+
+  const [processing, setProcessing] =
+    useState(false);
+
+  const [connecting, setConnecting] =
+    useState(false);
+
+  const [toastMenu, setToastMenu] =
+    useState(null);
+
+  const [callActive, setCallActive] =
+    useState(false);
+
+  const [aiSpeaking, setAiSpeaking] =
+    useState(false);
+
+  /*
+   * Determines whether we WANT
+   * recognition to be active.
+   */
+  const [micActive, setMicActive] =
+    useState(false);
+
+  const [messages, setMessages] =
+    useState([
+      {
+        role: 'agent',
+        text: GREETING,
+      },
+    ]);
 
   const abortRef = useRef(null);
-  const modeRef  = useRef(mode);
-  useEffect(() => { modeRef.current = mode; }, [mode]);
+
+  const modeRef = useRef(mode);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
 
   const {
-    speak: rawSpeak,
     cancel: cancelSpeech,
   } = useSpeechSynthesis();
 
-  // ------- speak wrapper: sets aiSpeaking true, then false on end -------
-  const speakAndWait = useCallback((text) => {
-    return new Promise((resolve) => {
-      if (!text) { resolve(); return; }
-      setAiSpeaking(true);
+  // ==========================================================
+  // SPEAK AGENT RESPONSE
+  // ==========================================================
 
-      // stop mic while AI speaks
-      setMicActive(false);
-
-      const synth = window.speechSynthesis;
-      if (!synth) { setAiSpeaking(false); resolve(); return; }
-
-      synth.cancel();
-      const u = new SpeechSynthesisUtterance(text);
-      u.lang = 'en-US';
-      u.rate = 1.02;
-      u.pitch = 1;
-      u.volume = 1;
-
-      const voices = synth.getVoices();
-      const v =
-        voices.find(x => /Google US English|Samantha|Microsoft Aria/i.test(x.name)) ||
-        voices.find(x => x.lang === 'en-US');
-      if (v) u.voice = v;
-
-      u.onend = () => {
-        setAiSpeaking(false);
-        // ✅ AI ne baat khatam ki → ab mic live
-        setTimeout(() => {
-          setMicActive(true);
+  const speakAndWait =
+    useCallback((text) => {
+      return new Promise((resolve) => {
+        if (!text) {
           resolve();
-        }, 150);
-      };
-      u.onerror = () => {
-        setAiSpeaking(false);
-        setMicActive(true);
-        resolve();
-      };
+          return;
+        }
 
-      synth.speak(u);
-    });
-  }, []);
+        /*
+         * Turn microphone OFF before
+         * the AI starts speaking.
+         */
+        setMicActive(false);
 
-  // ------- webhook -------
-  const handleFinalResult = useCallback(async (text) => {
-    if (!text) return;
-    if (aiSpeaking) return;   // ignore while AI is speaking (prevent echo loop)
+        setAiSpeaking(true);
 
-    // ✅ user bola → mic band, AI cut
-    setMicActive(false);
-    cancelSpeech();
+        if (
+          !('speechSynthesis' in window)
+        ) {
+          setAiSpeaking(false);
 
-    setMessages(prev => [...prev, { role: 'user', text }]);
-    setProcessing(true);
+          setMicActive(true);
 
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    const timer = setTimeout(() => controller.abort('timeout'), 30000);
+          resolve();
 
-    const menuContext = toastMenu
-      ? (toastMenu.menuGroups || [])
-          .flatMap(g => (g.menuItems || []).map(i =>
-            `${i.name}${i.price != null ? ` — $${i.price}` : ''}`))
-          .slice(0, 40).join('\n')
-      : '';
+          return;
+        }
 
-    try {
-      const reply = await askAgent(text, modeRef.current, controller.signal, {
-        menuContext,
-        cart: ToastCart.get(),
+        const synth =
+          window.speechSynthesis;
+
+        /*
+         * Stop previous voice.
+         */
+        synth.cancel();
+
+        const utterance =
+          new SpeechSynthesisUtterance(
+            text
+          );
+
+        utterance.lang = 'en-US';
+
+        utterance.rate = 1;
+
+        utterance.pitch = 1;
+
+        utterance.volume = 1;
+
+        /*
+         * Try to use a natural
+         * English voice.
+         */
+        const voices =
+          synth.getVoices();
+
+        const selectedVoice =
+          voices.find((voice) =>
+            /Google US English|Samantha|Aria/i.test(
+              voice.name
+            )
+          ) ||
+          voices.find(
+            (voice) =>
+              voice.lang === 'en-US'
+          );
+
+        if (selectedVoice) {
+          utterance.voice =
+            selectedVoice;
+        }
+
+        utterance.onend = () => {
+          console.log(
+            'AI FINISHED SPEAKING'
+          );
+
+          setAiSpeaking(false);
+
+          /*
+           * Wait briefly before microphone
+           * starts so it doesn't hear the
+           * end of the AI voice.
+           */
+          setTimeout(() => {
+            setMicActive(true);
+
+            resolve();
+          }, 400);
+        };
+
+        utterance.onerror = (event) => {
+          console.log(
+            'Speech synthesis error:',
+            event
+          );
+
+          setAiSpeaking(false);
+
+          setTimeout(() => {
+            setMicActive(true);
+
+            resolve();
+          }, 400);
+        };
+
+        console.log(
+          'AI SPEAKING:',
+          text
+        );
+
+        synth.speak(utterance);
       });
-      clearTimeout(timer);
+    }, []);
 
-      if (!reply) {
-        setMessages(prev => [...prev, { role: 'agent', text: 'Empty response — try again?' }]);
-        setMicActive(true);
+  // ==========================================================
+  // USER ANSWER
+  // ==========================================================
+
+  const handleFinalResult =
+    useCallback(
+      async (rawText) => {
+        if (!rawText) {
+          return;
+        }
+
+        const text =
+          String(rawText).trim();
+
+        if (!text) {
+          return;
+        }
+
+        /*
+         * Don't accept microphone audio
+         * while AI is speaking.
+         */
+        if (aiSpeaking) {
+          return;
+        }
+
+        console.log(
+          'USER SAID:',
+          text
+        );
+
+        /*
+         * IMPORTANT:
+         *
+         * DO NOT convert:
+         *
+         * five -> 5
+         * two  -> 2
+         * three -> 3
+         *
+         * Send exactly what recognition
+         * heard.
+         */
+
+        setMicActive(false);
+
+        try {
+          cancelSpeech();
+        } catch {
+          // Ignore
+        }
+
+        /*
+         * Add user message.
+         */
+        setMessages((previous) => [
+          ...previous,
+          {
+            role: 'user',
+            text,
+          },
+        ]);
+
+        setProcessing(true);
+
+        /*
+         * Cancel previous API request.
+         */
+        if (abortRef.current) {
+          abortRef.current.abort();
+        }
+
+        const controller =
+          new AbortController();
+
+        abortRef.current =
+          controller;
+
+        const timer =
+          setTimeout(() => {
+            controller.abort();
+          }, 30000);
+
+        /*
+         * Create menu context.
+         */
+        const menuContext =
+          toastMenu
+            ? (
+                toastMenu.menuGroups ||
+                []
+              )
+                .flatMap((group) =>
+                  (
+                    group.menuItems ||
+                    []
+                  ).map((item) => {
+                    if (
+                      item.price != null
+                    ) {
+                      return `${item.name} — $${item.price}`;
+                    }
+
+                    return item.name;
+                  })
+                )
+                .slice(0, 40)
+                .join('\n')
+            : '';
+
+        try {
+          /*
+           * SEND EXACT SPEECH TO API
+           *
+           * Example:
+           *
+           * "five"
+           *
+           * gets sent as:
+           *
+           * "five"
+           */
+
+          const reply =
+            await askAgent(
+              text,
+              modeRef.current,
+              controller.signal,
+              {
+                menuContext,
+
+                cart:
+                  ToastCart.get(),
+              }
+            );
+
+          clearTimeout(timer);
+
+          if (!reply) {
+            const message =
+              'I did not receive a response. Please try again.';
+
+            setMessages(
+              (previous) => [
+                ...previous,
+                {
+                  role: 'agent',
+                  text: message,
+                },
+              ]
+            );
+
+            await speakAndWait(
+              message
+            );
+
+            return;
+          }
+
+          console.log(
+            'AGENT RESPONSE:',
+            reply
+          );
+
+          /*
+           * Show response.
+           */
+          setMessages(
+            (previous) => [
+              ...previous,
+              {
+                role: 'agent',
+                text: reply,
+              },
+            ]
+          );
+
+          /*
+           * Speak response.
+           */
+          await speakAndWait(
+            reply
+          );
+        } catch (error) {
+          clearTimeout(timer);
+
+          console.error(
+            'Agent API error:',
+            error
+          );
+
+          const message =
+            error?.name ===
+            'AbortError'
+              ? 'The request timed out. Please try again.'
+              : 'Something went wrong. Please try again.';
+
+          setMessages(
+            (previous) => [
+              ...previous,
+              {
+                role: 'agent',
+                text: message,
+              },
+            ]
+          );
+
+          await speakAndWait(
+            message
+          );
+        } finally {
+          setProcessing(false);
+        }
+      },
+      [
+        aiSpeaking,
+        cancelSpeech,
+        toastMenu,
+        speakAndWait,
+      ]
+    );
+
+  // ==========================================================
+  // SPEECH RECOGNITION
+  // ==========================================================
+
+  const {
+    supported,
+    listening,
+    interim,
+    error: recognitionError,
+    permission,
+    start: startMic,
+    stop: stopMic,
+  } = useSpeechRecognition({
+    onFinalResult:
+      handleFinalResult,
+  });
+
+  // ==========================================================
+  // AUTOMATIC MIC START
+  // ==========================================================
+
+  useEffect(() => {
+    /*
+     * Do nothing if browser doesn't
+     * support speech recognition.
+     */
+    if (!supported) {
+      return;
+    }
+
+    /*
+     * Start listening when:
+     *
+     * call is active
+     * AI isn't speaking
+     * API isn't processing
+     * micActive = true
+     */
+    if (
+      callActive &&
+      micActive &&
+      !aiSpeaking &&
+      !processing &&
+      !listening
+    ) {
+      /*
+       * Small delay improves Chrome
+       * reliability between recognition
+       * sessions.
+       */
+      const timer =
+        setTimeout(() => {
+          startMic();
+        }, 250);
+
+      return () =>
+        clearTimeout(timer);
+    }
+
+    /*
+     * Stop microphone if it
+     * shouldn't currently listen.
+     */
+    if (
+      !callActive ||
+      !micActive ||
+      aiSpeaking ||
+      processing
+    ) {
+      stopMic();
+    }
+  }, [
+    callActive,
+    micActive,
+    aiSpeaking,
+    processing,
+    listening,
+    supported,
+    startMic,
+    stopMic,
+  ]);
+
+  // ==========================================================
+  // RECOGNITION ERRORS
+  // ==========================================================
+
+  useEffect(() => {
+    if (!recognitionError) {
+      return;
+    }
+
+    console.log(
+      'Recognition error:',
+      recognitionError
+    );
+
+    if (
+      recognitionError ===
+        'not-allowed' ||
+      recognitionError ===
+        'service-not-allowed'
+    ) {
+      setMessages(
+        (previous) => [
+          ...previous,
+          {
+            role: 'sys',
+            text:
+              'Microphone access is blocked. Please allow microphone access and reload the page.',
+          },
+        ]
+      );
+    }
+  }, [recognitionError]);
+
+  // ==========================================================
+  // OPEN PANEL
+  // ==========================================================
+
+  const handleOpen =
+    useCallback(
+      (selectedMode) => {
+        setMode(selectedMode);
+
+        setOpen(true);
+
+        setCallActive(false);
+
+        setMicActive(false);
+
+        setConnecting(true);
+
+        setTimeout(() => {
+          setConnecting(false);
+        }, 900);
+      },
+      []
+    );
+
+  // ==========================================================
+  // START / END CALL
+  // ==========================================================
+
+  const handleCallRequest =
+    useCallback(() => {
+      if (!callActive) {
+        /*
+         * START CALL
+         */
+
+        console.log(
+          'STARTING VOICE CALL'
+        );
+
+        setCallActive(true);
+
+        setMode('voice');
+
+        /*
+         * Keep microphone OFF while
+         * greeting is speaking.
+         */
+        setMicActive(false);
+
+        setTimeout(() => {
+          speakAndWait(
+            GREETING
+          );
+        }, 200);
+      } else {
+        /*
+         * END CALL
+         */
+
+        console.log(
+          'ENDING VOICE CALL'
+        );
+
+        setCallActive(false);
+
+        setMicActive(false);
+
+        stopMic();
+
+        try {
+          cancelSpeech();
+        } catch {
+          // Ignore
+        }
+
+        if (
+          'speechSynthesis' in
+          window
+        ) {
+          window.speechSynthesis.cancel();
+        }
+
+        setAiSpeaking(false);
+
+        setMode('chat');
+      }
+    }, [
+      callActive,
+      stopMic,
+      cancelSpeech,
+      speakAndWait,
+    ]);
+
+  // ==========================================================
+  // MANUAL MIC BUTTON
+  // ==========================================================
+
+  const handleMicClick =
+    useCallback(() => {
+      if (!callActive) {
         return;
       }
 
-      setMessages(prev => [...prev, { role: 'agent', text: reply }]);
-      // 🎙️ AI bole, phir mic live ho
-      await speakAndWait(reply);
-    } catch (err) {
-      clearTimeout(timer);
-      const msg = err.name === 'AbortError'
-        ? '⏱️ Request timed out.'
-        : '💥 ' + err.message;
-      setMessages(prev => [...prev, { role: 'agent', text: msg }]);
-      setMicActive(true);
-      console.error('❌ Webhook error:', err);
-    } finally {
-      setProcessing(false);
-    }
-  }, [cancelSpeech, toastMenu, aiSpeaking, speakAndWait]);
-
-  // ------- speech recognition -------
-  const {
-    supported, listening, interim, error: recError, permission,
-    start: startMic, stop: stopMic, toggle: toggleMic,
-  } = useSpeechRecognition({
-    onFinalResult: handleFinalResult,
-  });
-
-  // 🔥 sync mic with micActive (turn control)
-  useEffect(() => {
-    if (!supported) return;
-    if (micActive && callActive && !aiSpeaking && !processing) {
-      startMic().catch(() => {});
-    } else {
-      stopMic();
-    }
-  }, [micActive, callActive, aiSpeaking, processing, supported, startMic, stopMic]);
-
-  useEffect(() => {
-    if (!recError) return;
-    if (recError === 'not-allowed' || recError === 'permission-dismissed') {
-      setMessages(prev => [...prev, {
-        role: 'sys',
-        text: "🎤 Microphone is blocked. Click the 🔒 padlock → allow Microphone → reload.",
-      }]);
-    }
-  }, [recError]);
-
-  const handleOpen = useCallback((selectedMode) => {
-    setMode(selectedMode);
-    setOpen(true);
-    setCallActive(false);
-    setMicActive(false);
-    setConnecting(true);
-    setTimeout(() => setConnecting(false), 900);
-  }, []);
-
-  // ------- 📞 PHONE toggle -------
-  const handleCallRequest = useCallback(() => {
-    setCallActive(prev => {
-      const turningOn = !prev;
-
-      if (turningOn) {
-        setMode('voice');
-        // start mic next turn (after AI greeting — optional)
-        setTimeout(() => setMicActive(true), 300);
-      } else {
-        setMicActive(false);
-        cancelSpeech();
-        setMode('chat');
+      if (aiSpeaking) {
+        return;
       }
 
-      return turningOn;
-    });
-  }, [cancelSpeech]);
+      setMicActive(
+        (previous) => !previous
+      );
+    }, [
+      callActive,
+      aiSpeaking,
+    ]);
 
-  const handleMicClick = useCallback(() => {
-    // Manual override during call
-    if (!callActive) return;
-    setMicActive(prev => !prev);
-  }, [callActive]);
+  // ==========================================================
+  // CLOSE PANEL
+  // ==========================================================
 
-  const handleClose = useCallback(() => {
-    setOpen(false);
-    setCallActive(false);
-    setMicActive(false);
-    stopMic();
-    cancelSpeech();
-  }, [stopMic, cancelSpeech]);
+  const handleClose =
+    useCallback(() => {
+      setOpen(false);
 
-  const handleSendText = useCallback(() => {
-    const t = inputText.trim();
-    if (!t) return;
-    setInputText('');
-    // typed input → always allowed (bypass aiSpeaking gate)
-    setAiSpeaking(false);
-    cancelSpeech();
-    handleFinalResult(t);
-  }, [inputText, cancelSpeech, handleFinalResult]);
+      setCallActive(false);
 
-  useEffect(() => () => {
-    abortRef.current?.abort();
-    if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      setMicActive(false);
+
+      stopMic();
+
+      try {
+        cancelSpeech();
+      } catch {
+        // Ignore
+      }
+
+      if (
+        'speechSynthesis' in window
+      ) {
+        window.speechSynthesis.cancel();
+      }
+
+      setAiSpeaking(false);
+    }, [
+      stopMic,
+      cancelSpeech,
+    ]);
+
+  // ==========================================================
+  // SEND TEXT MESSAGE
+  // ==========================================================
+
+  const handleSendText =
+    useCallback(() => {
+      const text =
+        inputText.trim();
+
+      if (!text) {
+        return;
+      }
+
+      setInputText('');
+
+      handleFinalResult(text);
+    }, [
+      inputText,
+      handleFinalResult,
+    ]);
+
+  // ==========================================================
+  // CLEANUP
+  // ==========================================================
+
+  useEffect(() => {
+    return () => {
+      if (abortRef.current) {
+        abortRef.current.abort();
+      }
+
+      if (
+        'speechSynthesis' in window
+      ) {
+        window.speechSynthesis.cancel();
+      }
+    };
   }, []);
+
+  // ==========================================================
+  // UI
+  // ==========================================================
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-[#0f0c29] via-[#302b63] to-[#24243e]">
-
       <AgentBar
         hidden={open}
-        onVoice={() => handleOpen('voice')}
-        onCall={()  => handleOpen('call')}
-        onChat={()  => handleOpen('chat')}
+        onVoice={() =>
+          handleOpen('voice')
+        }
+        onCall={() =>
+          handleOpen('call')
+        }
+        onChat={() =>
+          handleOpen('chat')
+        }
       />
 
       <AgentPanel
         open={open}
         onClose={handleClose}
+
         messages={messages}
-        processing={processing || connecting}
+
+        processing={
+          processing ||
+          connecting
+        }
+
         interim={interim}
+
         inputText={inputText}
-        setInputText={setInputText}
-        onSend={handleSendText}
-        onCall={handleCallRequest}
-        onMicClick={handleMicClick}
+
+        setInputText={
+          setInputText
+        }
+
+        onSend={
+          handleSendText
+        }
+
+        onCall={
+          handleCallRequest
+        }
+
+        onMicClick={
+          handleMicClick
+        }
+
         listening={listening}
+
         supported={supported}
-        micBlocked={permission === 'denied'}
-        callActive={callActive}
-        aiSpeaking={aiSpeaking}
-        onToastMenuReady={setToastMenu}
+
+        micBlocked={
+          permission ===
+          'denied'
+        }
+
+        callActive={
+          callActive
+        }
+
+        aiSpeaking={
+          aiSpeaking
+        }
+
+        onToastMenuReady={
+          setToastMenu
+        }
       />
     </div>
   );

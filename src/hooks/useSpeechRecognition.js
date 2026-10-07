@@ -1,143 +1,512 @@
-// src/hooks/useSpeechRecognition.js
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-export function useSpeechRecognition({ lang = 'en-US', onFinalResult } = {}) {
+export function useSpeechRecognition({
+  lang = 'en-US',
+  onFinalResult,
+} = {}) {
   const recognitionRef = useRef(null);
-  const activeRef      = useRef(false);
-  const startingRef    = useRef(false);
+  const onFinalRef = useRef(onFinalResult);
 
-  const [supported, setSupported]   = useState(true);
-  const [listening, setListening]   = useState(false);
-  const [interim, setInterim]       = useState('');
-  const [error, setError]           = useState(null);
+  const activeRef = useRef(false);
+  const manuallyStoppedRef = useRef(false);
+  const transcriptRef = useRef('');
+  const silenceTimerRef = useRef(null);
+  const restartTimerRef = useRef(null);
+  const submittedRef = useRef(false);
+
+  const [supported, setSupported] = useState(true);
+  const [listening, setListening] = useState(false);
+  const [interim, setInterim] = useState('');
+  const [error, setError] = useState(null);
   const [permission, setPermission] = useState('prompt');
 
-  const onFinalRef = useRef(onFinalResult);
-  useEffect(() => { onFinalRef.current = onFinalResult; }, [onFinalResult]);
-
   useEffect(() => {
-    if (!navigator.permissions?.query) return;
-    let cancelled = false;
-    navigator.permissions.query({ name: 'microphone' })
-      .then((s) => {
-        if (cancelled) return;
-        setPermission(s.state);
-        s.onchange = () => setPermission(s.state);
-      })
-      .catch(() => {});
-    return () => { cancelled = true; };
+    onFinalRef.current = onFinalResult;
+  }, [onFinalResult]);
+
+  // ---------------------------------------------------------
+  // Clear silence timer
+  // ---------------------------------------------------------
+
+  const clearSilenceTimer = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
   }, []);
 
+  // ---------------------------------------------------------
+  // Submit speech
+  // ---------------------------------------------------------
+
+  const submitTranscript = useCallback(() => {
+    clearSilenceTimer();
+
+    const text = transcriptRef.current.trim();
+
+    if (!text || submittedRef.current) {
+      return;
+    }
+
+    submittedRef.current = true;
+
+    console.log('[VOICE] SUBMIT:', text);
+
+    setInterim('');
+
+    onFinalRef.current?.(text);
+
+    /*
+     * We have the answer.
+     * Stop recognition while the AI processes/speaks.
+     */
+    activeRef.current = false;
+    manuallyStoppedRef.current = true;
+
+    try {
+      recognitionRef.current?.stop();
+    } catch {
+      // already stopped
+    }
+  }, [clearSilenceTimer]);
+
+  // ---------------------------------------------------------
+  // Create recognition
+  // ---------------------------------------------------------
+
   useEffect(() => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) { setSupported(false); return; }
+    const SpeechRecognition =
+      window.SpeechRecognition ||
+      window.webkitSpeechRecognition;
 
-    const rec = new SR();
-    rec.lang = lang;
-    rec.interimResults = true;
-    rec.continuous = false;          // one utterance per session
-    rec.maxAlternatives = 1;
+    if (!SpeechRecognition) {
+      console.warn(
+        'Browser SpeechRecognition is not supported.'
+      );
 
-    rec.onstart = () => {
+      setSupported(false);
+      return;
+    }
+
+    setSupported(true);
+
+    const recognition = new SpeechRecognition();
+
+    recognition.lang = lang;
+
+    /*
+     * IMPORTANT FOR CHROME:
+     *
+     * Keep recognition alive instead of ending immediately
+     * after a very short word.
+     */
+    recognition.continuous = true;
+
+    /*
+     * Required so we can capture "five" even if Chrome
+     * doesn't mark it final.
+     */
+    recognition.interimResults = true;
+
+    recognition.maxAlternatives = 5;
+
+    recognition.onstart = () => {
+      console.log('[VOICE] recognition started');
+
       activeRef.current = true;
-      startingRef.current = false;
+
       setListening(true);
       setError(null);
     };
 
-    rec.onresult = (event) => {
-      let interimText = '';
-      let finalText   = '';
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const t = event.results[i][0].transcript;
-        if (event.results[i].isFinal) finalText += t;
-        else interimText += t;
-      }
-      if (interimText) setInterim(interimText);
-      if (finalText) {
-        setInterim('');
-        onFinalRef.current?.(finalText.trim());
-      }
+    recognition.onaudiostart = () => {
+      console.log('[VOICE] audio started');
     };
 
-    rec.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+    recognition.onsoundstart = () => {
+      console.log('[VOICE] sound detected');
+    };
+
+    recognition.onspeechstart = () => {
+      console.log('[VOICE] speech started');
+
+      clearSilenceTimer();
+    };
+
+    // -------------------------------------------------------
+    // RESULT
+    // -------------------------------------------------------
+
+    recognition.onresult = (event) => {
+      let completeText = '';
+
+      /*
+       * Read everything Chrome/Edge currently has.
+       *
+       * IMPORTANT:
+       * We DO NOT require result.isFinal.
+       */
+      for (
+        let i = 0;
+        i < event.results.length;
+        i++
+      ) {
+        const result = event.results[i];
+
+        if (!result?.[0]) continue;
+
+        const text =
+          result[0].transcript?.trim();
+
+        if (!text) continue;
+
+        completeText +=
+          (completeText ? ' ' : '') +
+          text;
+      }
+
+      completeText = completeText.trim();
+
+      if (!completeText) {
+        return;
+      }
+
+      transcriptRef.current =
+        completeText;
+
+      setInterim(completeText);
+
+      console.log(
+        '[VOICE] HEARD:',
+        completeText
+      );
+
+      /*
+       * Every time speech changes, restart the silence timer.
+       *
+       * This means:
+       *
+       * User: "five"
+       *
+       * HEARD: five
+       *
+       * 850 ms silence
+       *
+       * SUBMIT: five
+       *
+       * We don't wait for Chrome to mark it final.
+       */
+
+      clearSilenceTimer();
+
+      silenceTimerRef.current =
+        setTimeout(() => {
+          submitTranscript();
+        }, 850);
+    };
+
+    // -------------------------------------------------------
+    // SPEECH ENDED
+    // -------------------------------------------------------
+
+    recognition.onspeechend = () => {
+      console.log(
+        '[VOICE] speech ended'
+      );
+
+      /*
+       * Do NOT immediately stop recognition.
+       *
+       * Give Chrome time to provide its transcript.
+       */
+
+      clearSilenceTimer();
+
+      silenceTimerRef.current =
+        setTimeout(() => {
+          submitTranscript();
+        }, 650);
+    };
+
+    // -------------------------------------------------------
+    // ERROR
+    // -------------------------------------------------------
+
+    recognition.onerror = (event) => {
+      console.log(
+        '[VOICE] recognition error:',
+        event.error
+      );
+
+      if (
+        event.error === 'not-allowed' ||
+        event.error ===
+          'service-not-allowed'
+      ) {
         setPermission('denied');
         setError('not-allowed');
-      } else if (e.error === 'permission-dismissed') {
-        setError('permission-dismissed');
-      } else if (e.error !== 'aborted' && e.error !== 'no-speech') {
-        setError(e.error);
+
+        activeRef.current = false;
+        setListening(false);
+
+        return;
       }
-      activeRef.current = false;
-      startingRef.current = false;
+
+      /*
+       * These are normal and should not break the call.
+       */
+      if (
+        event.error === 'no-speech' ||
+        event.error === 'aborted'
+      ) {
+        return;
+      }
+
+      setError(event.error);
     };
 
-    rec.onend = () => {
-      activeRef.current = false;
-      startingRef.current = false;
+    // -------------------------------------------------------
+    // RECOGNITION ENDED
+    // -------------------------------------------------------
+
+    recognition.onend = () => {
+      console.log(
+        '[VOICE] recognition ended'
+      );
+
       setListening(false);
-      setInterim('');
-      // ❌ no auto restart — App controls it
-    };
 
-    recognitionRef.current = rec;
-    return () => {
-      activeRef.current = false;
-      try { rec.abort(); } catch {}
-    };
-  }, [lang]);
-
-  const ensureMicAccess = useCallback(async () => {
-    if (!navigator.mediaDevices?.getUserMedia) return true;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach(t => t.stop());
-      setPermission('granted');
-      setError(null);
-      return true;
-    } catch {
-      setPermission('denied');
-      setError('not-allowed');
-      return false;
-    }
-  }, []);
-
-  const start = useCallback(async () => {
-    const rec = recognitionRef.current;
-    if (!rec) return;
-    if (activeRef.current || startingRef.current) return;
-
-    startingRef.current = true;
-    const ok = await ensureMicAccess();
-    if (!ok) { startingRef.current = false; return; }
-
-    try { rec.start(); }
-    catch (err) {
-      startingRef.current = false;
-      if (err?.name === 'InvalidStateError') {
-        setTimeout(() => { try { rec.start(); } catch {} }, 200);
+      /*
+       * If we already have text, submit it.
+       */
+      if (
+        transcriptRef.current.trim() &&
+        !submittedRef.current
+      ) {
+        submitTranscript();
+        return;
       }
-    }
-  }, [ensureMicAccess]);
 
-  const stop = useCallback(() => {
-    activeRef.current = false;
-    startingRef.current = false;
-    const rec = recognitionRef.current;
-    if (!rec) return;
-    try { rec.stop(); } catch {}
-    setListening(false);
-    setInterim('');
-  }, []);
+      /*
+       * Chrome occasionally ends continuous recognition
+       * by itself.
+       *
+       * If we're SUPPOSED to still be listening,
+       * restart it.
+       */
+      if (
+        activeRef.current &&
+        !manuallyStoppedRef.current
+      ) {
+        clearTimeout(
+          restartTimerRef.current
+        );
 
-  const toggle = useCallback(() => {
-    if (activeRef.current) stop();
-    else start();
-  }, [start, stop]);
+        restartTimerRef.current =
+          setTimeout(() => {
+            try {
+              recognition.start();
+            } catch {
+              // Ignore duplicate start
+            }
+          }, 250);
+      }
+    };
+
+    recognitionRef.current =
+      recognition;
+
+    return () => {
+      clearSilenceTimer();
+
+      clearTimeout(
+        restartTimerRef.current
+      );
+
+      activeRef.current = false;
+      manuallyStoppedRef.current = true;
+
+      try {
+        recognition.abort();
+      } catch {
+        // ignore
+      }
+
+      recognitionRef.current = null;
+    };
+  }, [
+    lang,
+    clearSilenceTimer,
+    submitTranscript,
+  ]);
+
+  // ---------------------------------------------------------
+  // Microphone permission
+  // ---------------------------------------------------------
+
+  const ensureMicAccess =
+    useCallback(async () => {
+      if (
+        !navigator.mediaDevices
+          ?.getUserMedia
+      ) {
+        return true;
+      }
+
+      try {
+        const stream =
+          await navigator.mediaDevices
+            .getUserMedia({
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              },
+            });
+
+        stream
+          .getTracks()
+          .forEach((track) => {
+            track.stop();
+          });
+
+        setPermission('granted');
+        setError(null);
+
+        return true;
+      } catch (err) {
+        console.error(
+          '[VOICE] microphone permission:',
+          err
+        );
+
+        setPermission('denied');
+        setError('not-allowed');
+
+        return false;
+      }
+    }, []);
+
+  // ---------------------------------------------------------
+  // START
+  // ---------------------------------------------------------
+
+  const start =
+    useCallback(async () => {
+      const recognition =
+        recognitionRef.current;
+
+      if (!recognition) {
+        return;
+      }
+
+      if (activeRef.current) {
+        return;
+      }
+
+      const allowed =
+        await ensureMicAccess();
+
+      if (!allowed) {
+        return;
+      }
+
+      console.log(
+        '[VOICE] starting microphone'
+      );
+
+      clearSilenceTimer();
+
+      transcriptRef.current = '';
+      submittedRef.current = false;
+      manuallyStoppedRef.current = false;
+      activeRef.current = true;
+
+      setInterim('');
+      setError(null);
+
+      try {
+        recognition.start();
+      } catch (err) {
+        if (
+          err?.name ===
+          'InvalidStateError'
+        ) {
+          /*
+           * Chrome may still be closing the previous session.
+           */
+          setTimeout(() => {
+            try {
+              recognition.start();
+            } catch {
+              // ignore
+            }
+          }, 300);
+        } else {
+          console.error(
+            '[VOICE] start failed:',
+            err
+          );
+        }
+      }
+    }, [
+      ensureMicAccess,
+      clearSilenceTimer,
+    ]);
+
+  // ---------------------------------------------------------
+  // STOP
+  // ---------------------------------------------------------
+
+  const stop =
+    useCallback(() => {
+      console.log(
+        '[VOICE] stopping microphone'
+      );
+
+      clearSilenceTimer();
+
+      manuallyStoppedRef.current = true;
+      activeRef.current = false;
+
+      /*
+       * Do NOT submit old transcript when AI intentionally
+       * turns microphone off.
+       */
+      transcriptRef.current = '';
+      submittedRef.current = false;
+
+      setInterim('');
+      setListening(false);
+
+      try {
+        recognitionRef.current?.stop();
+      } catch {
+        // already stopped
+      }
+    }, [clearSilenceTimer]);
+
+  // ---------------------------------------------------------
+  // TOGGLE
+  // ---------------------------------------------------------
+
+  const toggle =
+    useCallback(() => {
+      if (activeRef.current) {
+        stop();
+      } else {
+        start();
+      }
+    }, [start, stop]);
 
   return {
-    supported, listening, interim, error,
-    permission, start, stop, toggle,
+    supported,
+    listening,
+    interim,
+    error,
+    permission,
+    start,
+    stop,
+    toggle,
   };
 }

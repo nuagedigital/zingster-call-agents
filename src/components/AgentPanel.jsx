@@ -113,7 +113,7 @@ export default function AgentPanel({
         <div className="p-4">
           {micBlocked && (
             <div className="mb-2 text-[12px] text-amber-600 text-center">
-              🎤 Mic blocked — click the 🔒 padlock → allow Microphone → reload.
+              Microphone blocked. Allow microphone access in your browser settings, then reload.
             </div>
           )}
 
@@ -137,7 +137,7 @@ export default function AgentPanel({
 
             <div className="absolute bottom-3 right-3 flex items-center gap-2">
 
-              {/* 🎤 MIC — visible only during call; shows listening vs idle */}
+              {/* MIC — visible only during call; shows listening vs idle */}
               {callActive && (
                 <button
                   type="button"
@@ -158,7 +158,7 @@ export default function AgentPanel({
                 </button>
               )}
 
-              {/* 📞 PHONE — always visible; crossed when call active */}
+              {/* PHONE — always visible; crossed when call active */}
               <button
                 type="button"
                 onClick={(e) => { e.preventDefault(); e.stopPropagation(); onCall(); }}
@@ -185,7 +185,7 @@ export default function AgentPanel({
                 )}
               </button>
 
-              {/* ➤ SEND */}
+              {/* SEND */}
               <button
                 type="button"
                 onClick={(e) => { e.preventDefault(); if (canSend) onSend(); }}
