@@ -1,5 +1,5 @@
 // src/lib/api.js
-export const WEBHOOK_URL = 'https://chainwizz12.app.n8n.cloud/webhook/zingster/ask';
+export const WEBHOOK_URL = 'https://abdullah-804.app.n8n.cloud/webhook/zingster/ask';
 export const SESSION_ID  = 'zg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
 export const BRAND       = "Zingster's";
 
